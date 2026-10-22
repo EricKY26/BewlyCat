@@ -110,7 +110,13 @@ async function getRequestHeaders(profile: AppClientProfile, mid?: number | null)
 
 // Chromium 的 fetch 无法改写 User-Agent / Referer，也会附带 sec-ch-ua 客户端提示；
 // 用仅匹配非标签页请求（即扩展后台自身）的会话规则改写，网页自己的请求不受影响。
-const APP_CLIENT_HEADER_RULES: { id: number, regexFilter: string, userAgent: string }[] = [
+interface AppClientHeaderRule {
+  id: number
+  regexFilter: string
+  userAgent: string
+}
+
+const APP_CLIENT_HEADER_RULES: AppClientHeaderRule[] = [
   {
     id: 1002,
     regexFilter: '^https://passport\\.bilibili\\.com/(x/passport-tv-login/qrcode/|api/v[23]/oauth2/refresh_token)',
@@ -128,7 +134,59 @@ const APP_CLIENT_HEADER_RULES: { id: number, regexFilter: string, userAgent: str
   },
 ]
 
+// Safari 的 regexFilter 走 WebKit 内容拦截器的正则子集：不支持分组 `()` 与
+// 析取 `|`，命中任一项整条规则就会失效（见 URLFilterParser 的 "Groups are not
+// supported yet." / "Disjunctions are not supported yet."）。这里拆成等价的多条
+// 无分组规则，匹配的仍是同一批 APP 接口。
+const APP_CLIENT_HEADER_RULES_SAFARI: AppClientHeaderRule[] = [
+  {
+    id: 1002,
+    regexFilter: '^https://passport\\.bilibili\\.com/x/passport-tv-login/qrcode/',
+    userAgent: DART_USER_AGENT,
+  },
+  {
+    id: 1005,
+    regexFilter: '^https://passport\\.bilibili\\.com/api/v[23]/oauth2/refresh_token',
+    userAgent: DART_USER_AGENT,
+  },
+  {
+    id: 1003,
+    regexFilter: '^https://app\\.bilibili\\.com/x/v2/feed/index\\?',
+    userAgent: HD_USER_AGENT,
+  },
+  {
+    id: 1004,
+    regexFilter: '^https://app\\.bilibili\\.com/x/feed/dislike\\?',
+    userAgent: DART_USER_AGENT,
+  },
+  {
+    id: 1006,
+    regexFilter: '^https://app\\.bilibili\\.com/x/feed/dislike/cancel\\?',
+    userAgent: DART_USER_AGENT,
+  },
+]
+
 const APP_CLIENT_URL_PATTERN = new RegExp(APP_CLIENT_HEADER_RULES.map(rule => `(?:${rule.regexFilter})`).join('|'))
+
+// Safari 不发送客户端提示头，且 WebKit 的 declarativeNetRequest 头名白名单不含
+// sec-ch-*；只要规则里出现这些头，整条规则就会被判为无效，updateSessionRules
+// 整批失败。Safari 构建直接不生成这几项。
+// eslint-disable-next-line node/prefer-global/process
+const isSafariBuild = Boolean(process.env.SAFARI)
+
+const activeAppClientHeaderRules = isSafariBuild ? APP_CLIENT_HEADER_RULES_SAFARI : APP_CLIENT_HEADER_RULES
+// 两个构建的规则 id 集合可能不同，清理时取并集，避免残留旧规则。
+const appClientHeaderRuleIds = [...new Set(
+  [...APP_CLIENT_HEADER_RULES, ...APP_CLIENT_HEADER_RULES_SAFARI].map(rule => rule.id),
+)]
+
+const APP_CLIENT_SEC_CH_HEADER_RULES: browser.DeclarativeNetRequest.RuleActionRequestHeadersItemType[] = isSafariBuild
+  ? []
+  : [
+      { header: 'sec-ch-ua', operation: 'remove' },
+      { header: 'sec-ch-ua-mobile', operation: 'remove' },
+      { header: 'sec-ch-ua-platform', operation: 'remove' },
+    ]
 
 export function isAppClientRequestUrl(url: string): boolean {
   return APP_CLIENT_URL_PATTERN.test(url)
@@ -141,8 +199,8 @@ async function syncAppClientHeaderRules() {
 
   try {
     await browser.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: APP_CLIENT_HEADER_RULES.map(rule => rule.id),
-      addRules: APP_CLIENT_HEADER_RULES.map(rule => ({
+      removeRuleIds: appClientHeaderRuleIds,
+      addRules: activeAppClientHeaderRules.map(rule => ({
         id: rule.id,
         // 高于 assets/rules.json 中为 passport POST 设置 Origin 的静态规则
         priority: 3,
@@ -152,9 +210,7 @@ async function syncAppClientHeaderRules() {
             { header: 'user-agent', operation: 'set', value: rule.userAgent },
             { header: 'referer', operation: 'set', value: APP_CLIENT_REFERER },
             { header: 'origin', operation: 'remove' },
-            { header: 'sec-ch-ua', operation: 'remove' },
-            { header: 'sec-ch-ua-mobile', operation: 'remove' },
-            { header: 'sec-ch-ua-platform', operation: 'remove' },
+            ...APP_CLIENT_SEC_CH_HEADER_RULES,
           ],
         },
         condition: {
@@ -166,7 +222,9 @@ async function syncAppClientHeaderRules() {
     })
   }
   catch (error) {
-    console.error('[BewlyCat] Failed to update the APP client header rules:', error)
+    // 把内层原因并入同一条日志：Safari 的扩展错误列表只展示消息首行。
+    const detail = error instanceof Error ? error.message : String(error)
+    console.error(`[BewlyCat] Failed to update the APP client header rules: ${detail}`)
   }
 }
 
