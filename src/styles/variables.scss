@@ -470,6 +470,29 @@
   --bew-ip-tag-text: var(--bew-text-3);
 }
 
+// Safari 会把文档样式表里的 `:host, :root` 规则也应用到 shadow host
+// （bili-comments 等自定义元素）上，让宿主回落到浅色 token，并沿 shadow 树
+// 继承下去。深色模式下把这些常用 token 显式下发到所有元素，保证评论等原生
+// 组件里解析到的是深色值。
+//
+// 仅 Safari 构建需要；其它浏览器打包时不包含这段规则（见 vite.config.ts 的
+// `$bewly-safari-build`）。
+@if $bewly-safari-build {
+  :root.dark.bewly-design,
+  :root.dark.bewly-design * {
+    --bew-bg: color-mix(in oklab, var(--bew-dark-base-color), black 20%);
+    --bew-content-solid: color-mix(in oklab, var(--bew-dark-base-color), white 3%);
+    --bew-content-alt-solid: color-mix(in oklab, var(--bew-dark-base-color), white 5%);
+    --bew-elevated-solid: color-mix(in oklab, var(--bew-dark-base-color), white 6%);
+    --bew-text-1: hsl(220 13% 95%);
+    --bew-text-2: hsl(220 13% 85% / 90%);
+    --bew-text-3: hsl(220 13% 75% / 75%);
+    --bew-text-4: hsl(220 13% 65% / 55%);
+    --bew-fill-1: rgb(131 131 145 / 10%);
+    --bew-border-color: rgb(131 131 145 / 16%);
+  }
+}
+
 :root.dark.bewly-design.forceDark,
 :host(.dark.bewly-design.forceDark) {
   --bew-filter-force-dark: invert(0.98) hue-rotate(180deg) brightness(1.1);

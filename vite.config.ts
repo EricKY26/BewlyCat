@@ -72,6 +72,14 @@ export const sharedConfig: UserConfig = {
       'vue-demi',
     ],
   },
+  css: {
+    preprocessorOptions: {
+      // 让 SCSS 按构建目标裁剪 Safari 专用规则（例如评论区深色 token 下发）。
+      scss: {
+        additionalData: `$bewly-safari-build: ${isSafari};`,
+      },
+    },
+  },
 
 }
 
