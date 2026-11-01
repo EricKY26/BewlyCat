@@ -6,7 +6,8 @@ import { useConfirmDialog } from '~/composables/useConfirmDialog'
 import { importSettingsStorage } from '~/composables/useSettingsStorage'
 import { HomeSubPage } from '~/contentScripts/views/Home/types'
 import { AppPage } from '~/enums/appEnums'
-import { normalizeRecommendationModeSwitcherOptions, originalSettings, RECOMMENDATION_MODE_OPTIONS, settings, videoCardContextMenuKeys } from '~/logic'
+import type { MomentsWantedUser } from '~/logic'
+import { momentsPinnedUsers, momentsWantedUsers, normalizeRecommendationModeSwitcherOptions, originalSettings, RECOMMENDATION_MODE_OPTIONS, settings, videoCardContextMenuKeys } from '~/logic'
 import { applyPendingSettingsMigrations, formatSettingsMigrationConfirmMessage, getPendingSettingsMigrationChoices, hasPendingSettingsMigrations } from '~/utils/settingsMigration'
 
 import SettingsItem from '../components/SettingsItem.vue'
@@ -194,6 +195,36 @@ function normalizeImportedValue(current: unknown, imported: unknown, key = ''): 
     : { compatible: false }
 }
 
+const SETTINGS_EXPORT_FORMAT_VERSION = 2
+
+/**
+ * 校验导出文件里的动态页用户列表。
+ * 这些列表保存在独立 storage 键里，不在 settings 结构中，需要单独导入。
+ */
+function normalizeMomentsUsers(value: unknown): { users: MomentsWantedUser[], dropped: number } | null {
+  if (!Array.isArray(value))
+    return null
+
+  const users: MomentsWantedUser[] = []
+  let dropped = 0
+  value.forEach((item) => {
+    if (!isRecord(item)
+      || typeof item.mid !== 'string'
+      || !item.mid.trim()
+      || typeof item.name !== 'string'
+      || typeof item.face !== 'string') {
+      dropped++
+      return
+    }
+
+    users.push({ mid: item.mid.trim(), name: item.name, face: item.face })
+  })
+
+  return users.length > 0 || value.length === 0
+    ? { users, dropped }
+    : null
+}
+
 function handleImportSettings() {
   importSettingsRef.value?.click()
 }
@@ -213,13 +244,22 @@ function handleImportFile(event: Event) {
       if (!importedSettings || Array.isArray(importedSettings) || typeof importedSettings !== 'object')
         throw new TypeError('Invalid settings backup')
 
-      if (hasPendingSettingsMigrations(importedSettings)) {
+      // v2 导出会在 settings 扁平字段之外额外带上动态页的两个用户列表；
+      // 旧版导出没有这些字段，保持原有导入行为。
+      const {
+        bewlyExportVersion: exportVersion,
+        momentsPinnedUsers: importedPinnedUsers,
+        momentsWantedUsers: importedWantedUsers,
+        ...settingsPayload
+      } = importedSettings
+
+      if (hasPendingSettingsMigrations(settingsPayload)) {
         const message = formatSettingsMigrationConfirmMessage(
-          importedSettings,
+          settingsPayload,
           t,
           'settings.maintenance.migrate_legacy_import_confirm',
         )
-        const toggleFields = getPendingSettingsMigrationChoices(importedSettings).map(choice => ({
+        const toggleFields = getPendingSettingsMigrationChoices(settingsPayload).map(choice => ({
           id: choice.id,
           label: String(t(choice.titleKey)),
           value: choice.value,
@@ -232,7 +272,7 @@ function handleImportFile(event: Event) {
           toggleFields,
         })
         if (shouldMigrate) {
-          applyPendingSettingsMigrations(importedSettings, Object.fromEntries(
+          applyPendingSettingsMigrations(settingsPayload, Object.fromEntries(
             toggleFields.map(field => [field.id, field.value]),
           ))
         }
@@ -242,7 +282,7 @@ function handleImportFile(event: Event) {
       const recognizedSettings: Record<string, unknown> = {}
       let importedCount = 0
       let ignoredCount = 0
-      Object.entries(importedSettings).forEach(([key, value]) => {
+      Object.entries(settingsPayload).forEach(([key, value]) => {
         if (!Object.prototype.hasOwnProperty.call(currentSettings, key)) {
           ignoredCount++
           return
@@ -258,16 +298,35 @@ function handleImportFile(event: Event) {
         importedCount++
       })
 
-      if (importedCount === 0) {
+      const hasAuxiliaryPayload = typeof exportVersion === 'number' && exportVersion >= SETTINGS_EXPORT_FORMAT_VERSION
+      const wantedUsers = hasAuxiliaryPayload && importedWantedUsers !== undefined
+        ? normalizeMomentsUsers(importedWantedUsers)
+        : null
+      const pinnedUsers = hasAuxiliaryPayload && importedPinnedUsers !== undefined
+        ? normalizeMomentsUsers(importedPinnedUsers)
+        : null
+      const auxiliaryImportedCount = (wantedUsers ? 1 : 0) + (pinnedUsers ? 1 : 0)
+      const auxiliaryIgnoredCount = (hasAuxiliaryPayload && importedWantedUsers !== undefined && !wantedUsers ? 1 : 0)
+        + (hasAuxiliaryPayload && importedPinnedUsers !== undefined && !pinnedUsers ? 1 : 0)
+        + (wantedUsers?.dropped ?? 0)
+        + (pinnedUsers?.dropped ?? 0)
+
+      if (importedCount + auxiliaryImportedCount === 0) {
         toast.warning(t('settings.maintenance.import_no_matches'))
         return
       }
 
-      await importSettingsStorage(recognizedSettings)
+      if (importedCount > 0)
+        await importSettingsStorage(recognizedSettings)
+
+      if (wantedUsers)
+        momentsWantedUsers.value = wantedUsers.users
+      if (pinnedUsers)
+        momentsPinnedUsers.value = pinnedUsers.users
 
       toast.success(t('settings.maintenance.import_success', {
-        imported: importedCount,
-        ignored: ignoredCount,
+        imported: importedCount + auxiliaryImportedCount,
+        ignored: ignoredCount + auxiliaryIgnoredCount,
       }))
     }
     catch {
@@ -278,7 +337,14 @@ function handleImportFile(event: Event) {
 }
 
 function handleExportSettings() {
-  const jsonStr = JSON.stringify(settings.value, null, 2)
+  // 动态页的两个用户列表是独立 storage 键，必须显式并入导出负载。
+  const payload = {
+    ...settings.value,
+    bewlyExportVersion: SETTINGS_EXPORT_FORMAT_VERSION,
+    momentsPinnedUsers: momentsPinnedUsers.value,
+    momentsWantedUsers: momentsWantedUsers.value,
+  }
+  const jsonStr = JSON.stringify(payload, null, 2)
   const blob = new Blob([jsonStr], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
