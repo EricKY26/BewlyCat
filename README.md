@@ -2,6 +2,7 @@
 
 > 基于 [BewlyCat](https://github.com/keleus/BewlyCat)（其本身基于 [BewlyBewly](https://github.com/BewlyBewly/BewlyBewly)）的 **Safari 自用构建分支**。
 > 上游不维护 Safari；本分支的 Safari 适配、构建与问题由本仓库自行维护。
+> 当前基于上游 **v1.8.3**（2026-11-01 同步）。
 
 <p align="center" style="margin-bottom: 0px !important;">
 <img width="300" alt="BewlyCat icon" src="./assets/icon-512.png"><br/>
@@ -21,12 +22,17 @@
 
 ## 本分支是什么
 
-仅面向 Safari 的最小适配分支；相关规则按构建目标裁剪，不影响其他浏览器的构建产物。当前包含：
+仅面向 Safari 的最小适配分支；相关规则按构建目标裁剪，不影响其他浏览器的构建产物。
 
-1. **DNR 规则适配**：Safari 的 `modifyHeaders` 头名白名单不含 `sec-ch-ua*`，`regexFilter` 也不支持分组 `()` 与析取 `|`；Safari 构建改用拆分后的无分组规则。
+**Safari 专用修复**
+
+1. **DNR 规则适配**：Safari 的 `modifyHeaders` 头名白名单不含 `sec-ch-ua*`，`regexFilter` 也不支持分组 `()` 与析取 `|`；Safari 构建改用拆分后的无分组规则（构建期 `process.env.SAFARI` 控制）。
 2. **`cookies.onChanged` 防御**：Safari 会以空参数派发该事件，避免解构抛错。
-3. **深色模式评论区**：Safari 会把文档级 `:host` 规则应用到 shadow host，浅色 token 落到 `bili-comments`；Safari 构建在深色模式下显式下发深色 token。
-4. **构建期开关**：`vite.config.ts` 注入 `$bewly-safari-build`，上述样式只在 Safari 包中生效。
+3. **深色模式评论区**：Safari 会把文档级 `:host` 规则应用到 shadow host，浅色 token 落到 `bili-comments`；Safari 构建在深色模式下显式下发深色 token（SCSS `$bewly-safari-build` 控制，其他浏览器构建不含该规则）。
+
+**通用修复（所有浏览器构建）**
+
+4. **设置导出 / 导入**：导出负载增加 `bewlyExportVersion`、`momentsWantedUsers`、`momentsPinnedUsers`；导入时校验并写回动态页「想看分组」与「固定 UP 主」，旧版扁平格式保持兼容。导出的 JSON 包含 UP 主 UID、昵称和头像 URL，请勿公开分享。
 
 功能集与上游一致；功能说明与更新日志请见上游仓库。
 
@@ -40,6 +46,19 @@ pnpm build-safari
 ```
 
 产物目录：`extension-safari/`。
+
+## 同步上游
+
+```sh
+git fetch origin
+git switch safari
+git merge origin/main
+pnpm install --frozen-lockfile
+pnpm build-safari
+git push fork safari
+```
+
+建议使用 merge 而不是 rebase + force push：`safari` 分支已公开发布，需要保留可快进的推送历史；冲突按需手动解决。
 
 ## 安装（Safari 27，无需 Xcode）
 
